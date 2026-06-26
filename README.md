@@ -171,7 +171,21 @@ ISRO/
 ```
 
 ---
+## Datasets Used
 
+### Training
+- DeepGlobe Road Extraction Dataset
+- Resolution: ~50 cm GSD
+- RGB satellite imagery
+
+### Local Validation
+- Massachusetts Roads Dataset
+- Used only for cross-dataset evaluation
+
+### Future Deployment
+- Cartosat-3
+- Sentinel-2
+- ISRO Hackathon imagery
 ## 🎤 For Judges
 
 **30-second walkthrough:**
@@ -181,4 +195,4 @@ ISRO/
 3. Go to **Tab 3: "Node Failure Demo"** → press **"Run Demo Scenario"** — instant impact metrics
 4. Go to **Tab 4: "Metrics"** — see DeepGlobe vs cross-dataset results with domain shift explanation
 
-**Key claim:** The system can take any satellite tile, extract its road network, identify critical junctions, and quantify disaster resilience — all automatically, in under 30 seconds on a GPU.
+**Key claim:**The system is designed to process high-resolution satellite imagery and extract road networks automatically.
