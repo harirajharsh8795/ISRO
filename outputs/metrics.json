@@ -1,0 +1,7 @@
+{
+  "iou": 0.5582623377386963,
+  "dice": 0.7137199190526211,
+  "best_epoch": 29,
+  "dataset": "DeepGlobe",
+  "architecture": "Unet/resnet34"
+}

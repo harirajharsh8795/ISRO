@@ -1,0 +1,8 @@
+{
+  "mean_iou": 0.023265251328868284,
+  "mean_dice": 0.0444088584084947,
+  "nodes_before_healing": 146,
+  "edges_before_healing": 133,
+  "nodes_after_healing": 146,
+  "edges_after_healing": 138
+}

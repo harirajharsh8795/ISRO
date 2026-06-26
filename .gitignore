@@ -17,6 +17,13 @@ ENV/
 .idea/
 
 # Local outputs/data
-outputs/
+
 *.pth
 *.pkl
+!checkpoints/
+!checkpoints/best_model.pth
+!outputs/healed_graph.pkl
+!outputs/unhealed_graph.pkl
+!outputs/centrality.json
+!outputs/criticality.geojson
+!outputs/metrics.json

@@ -9,7 +9,7 @@ Maps to:
 """
 
 import logging
-from typing import Tuple, List, Dict, Any
+from typing import Tuple, List, Dict, Any, Union
 
 import cv2
 import numpy as np
@@ -116,33 +116,180 @@ def fetch_osm_roads(
     aoi_bbox: Tuple[float, float, float, float],
     target_epsg: int = DEFAULT_UTM_EPSG,
 ) -> gpd.GeoDataFrame:
-    """Fetches OSM road vectors for an AOI and reprojects to a projected CRS (meters)."""
+    """Fetches OSM road vectors for an AOI and reprojects to a projected CRS (meters), using local cache if available."""
+    import hashlib
+    import os
+
+    # 1. Determine cache path based on hashed bbox (rounded to 6 decimal places)
     north, south, east, west = aoi_bbox
+    rounded_bbox = [round(c, 6) for c in aoi_bbox]
+    bbox_str = f"{rounded_bbox[0]:.6f}_{rounded_bbox[1]:.6f}_{rounded_bbox[2]:.6f}_{rounded_bbox[3]:.6f}"
+    bbox_hash = hashlib.sha256(bbox_str.encode('utf-8')).hexdigest()
+    
+    cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outputs", "osm_cache")
+    cache_file = os.path.join(cache_dir, f"{bbox_hash}.geojson")
 
-    # Fetch all highway features within the bounding box
-    gdf = ox.features_from_bbox(
-        bbox=(north, south, east, west),
-        tags={'highway': True},
-    )
+    # 2. Check cache first
+    if os.path.exists(cache_file):
+        try:
+            gdf = gpd.read_file(cache_file)
+            if not gdf.empty:
+                logger.info(f"[OSM CACHE HIT] Loaded cached OSM data from outputs/osm_cache/{bbox_hash}.geojson")
+                # Reproject if loaded CRS doesn't match target_epsg
+                if gdf.crs is None or gdf.crs.to_epsg() != target_epsg:
+                    gdf = gdf.to_crs(epsg=target_epsg)
+                return gdf
+            else:
+                logger.info(f"[OSM CACHE HIT] Cached file outputs/osm_cache/{bbox_hash}.geojson is empty, returning empty GeoDataFrame.")
+                return gpd.GeoDataFrame(geometry=[], crs=target_epsg)
+        except Exception as e:
+            logger.warning(f"Error loading OSM cache from {cache_file}: {e}. Falling back to live query.")
 
-    # Keep only line geometries (roads); drop points (traffic signals etc.) and polygons (areas)
-    gdf = gdf[gdf.geometry.type.isin(['LineString', 'MultiLineString'])].copy()
+    # 3. Attempt Live Fetch
+    logger.info(f"[OSM CACHE MISS] Attempting live OSM query for bbox {aoi_bbox}")
+    try:
+        # Fetch all highway features within the bounding box
+        # OSMnx expects bbox as (left, bottom, right, top) -> (west, south, east, north)
+        gdf = ox.features_from_bbox(
+            bbox=(west, south, east, north),
+            tags={'highway': True},
+        )
+        
+        # Keep only line geometries (roads); drop points and polygons
+        gdf = gdf[gdf.geometry.type.isin(['LineString', 'MultiLineString'])].copy()
+        
+        if gdf.empty:
+            logger.warning("No road geometries found in live OSM query. Saving empty cache.")
+            os.makedirs(cache_dir, exist_ok=True)
+            empty_gdf = gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+            empty_gdf.to_file(cache_file, driver="GeoJSON")
+            return gpd.GeoDataFrame(geometry=[], crs=target_epsg)
 
-    if gdf.empty:
-        logger.warning("No road geometries found in the AOI. Returning empty GeoDataFrame.")
+        # OSMnx returns EPSG:4326 — reproject to projected UTM immediately
+        gdf = gdf.to_crs(epsg=target_epsg)
+
+        # Normalise the highway column (it can be a list for multi-tagged features)
+        if 'highway' in gdf.columns:
+            gdf['highway'] = gdf['highway'].apply(
+                lambda v: v[0] if isinstance(v, list) else v
+            )
+
+        # Save to cache
+        os.makedirs(cache_dir, exist_ok=True)
+        try:
+            # We can save it in projected CRS, geopandas handles it
+            gdf.to_file(cache_file, driver="GeoJSON")
+            logger.info(f"[OSM CACHE WRITE] Successfully cached live OSM query to outputs/osm_cache/{bbox_hash}.geojson")
+        except Exception as save_err:
+            logger.warning(f"Failed to save OSM query to cache: {save_err}")
+
+        logger.info(f"Fetched {len(gdf)} road segments from live network, reprojected to EPSG:{target_epsg}")
         return gdf
 
-    # OSMnx returns EPSG:4326 — reproject to projected UTM immediately
-    gdf = gdf.to_crs(epsg=target_epsg)
+    except Exception as live_err:
+        # If live query fails, check if cache file exists as fallback
+        if os.path.exists(cache_file):
+            logger.info(f"[OSM FALLBACK] Live query failed ({live_err}). Recovering from cache outputs/osm_cache/{bbox_hash}.geojson.")
+            try:
+                gdf = gpd.read_file(cache_file)
+                if gdf.crs is None or gdf.crs.to_epsg() != target_epsg:
+                    gdf = gdf.to_crs(epsg=target_epsg)
+                return gdf
+            except Exception as read_err:
+                logger.error(f"Fallback cache load failed: {read_err}")
+                
+        logger.warning(f"Live OSM query failed and no cache is available. Returning empty GeoDataFrame. Error: {live_err}")
+        return gpd.GeoDataFrame(geometry=[], crs=target_epsg)
 
-    # Normalise the highway column (it can be a list for multi-tagged features)
-    if 'highway' in gdf.columns:
-        gdf['highway'] = gdf['highway'].apply(
-            lambda v: v[0] if isinstance(v, list) else v
-        )
 
-    logger.info(f"Fetched {len(gdf)} road segments, reprojected to EPSG:{target_epsg}")
-    return gdf
+def validate_satellite_image(img_path: str) -> Tuple[bool, str]:
+    """
+    Validates that the image at img_path is a natural satellite image and not a presentation slide,
+    screenshot, or UI frame.
+    
+    Returns:
+        (is_valid, reason_or_status)
+    """
+    import cv2
+    import numpy as np
+    import os
+    import rasterio
+
+    # Check file extension
+    ext = os.path.splitext(img_path)[1].lower()
+    if ext not in ('.tif', '.tiff', '.jpeg', '.jpg', '.png'):
+        return False, f"Invalid file extension: {ext}"
+
+    # Read image dimensions using rasterio or cv2
+    try:
+        if ext in ('.tif', '.tiff'):
+            with rasterio.open(img_path) as src:
+                w, h = src.width, src.height
+                has_crs = src.crs is not None
+                num_channels = src.count
+        else:
+            img = cv2.imread(img_path)
+            if img is None:
+                return False, "Failed to load image via OpenCV"
+            h, w, num_channels = img.shape
+            has_crs = False
+    except Exception as e:
+        return False, f"Read error: {e}"
+
+    # Rule 1: Aspect Ratio Check
+    # Satellite imagery patches/tiles are square or near-square (typically 1:1).
+    # Slides are widescreen (16:9 = 1.77, 4:3 = 1.33).
+    aspect_ratio = w / h
+    if aspect_ratio > 1.3 or aspect_ratio < 0.7:
+        if not has_crs:
+            return False, f"Non-square aspect ratio ({aspect_ratio:.2f}), likely a presentation slide or widescreen screenshot"
+
+    # Load full image for visual audits
+    try:
+        if ext in ('.tif', '.tiff'):
+            with rasterio.open(img_path) as src:
+                bands = min(3, src.count)
+                img = src.read(list(range(1, bands + 1)))
+                img = np.transpose(img, (1, 2, 0))
+                if bands == 1:
+                    img = np.repeat(img, 3, axis=2)
+                num_channels = 3
+        else:
+            img = cv2.imread(img_path)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    except Exception as e:
+        return False, f"Visual load error: {e}"
+
+    # Rule 2: Color distribution / flat regions (Slides backgrounds)
+    # Quantize colors to 3 bits per channel (8 bins per channel -> 512 total colors)
+    quantized = (img >> 5).astype(np.int32)
+    flat_colors = quantized[:, :, 0] * 64 + quantized[:, :, 1] * 8 + quantized[:, :, 2]
+    unique_bins, counts = np.unique(flat_colors, return_counts=True)
+    dominant_fraction = np.max(counts) / (h * w)
+
+    # Rule 3: High contrast edges (Laplacian Variance)
+    # Slides with text characters have extremely high contrast local changes.
+    # Satellite images have textured but smooth landscapes.
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY) if num_channels >= 3 else img[:, :, 0]
+    laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+
+    # Rule 4: Edge density
+    dx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    edge_density = np.mean(np.abs(dx) > 20)
+
+    # Reject if it doesn't have GeoTIFF CRS metadata and exhibits slide/UI characteristics
+    if not has_crs:
+        # Check for square presentation slides or diagrams
+        # Usually they have high flat-color dominance, very few unique quantized colors, and high contrast text
+        if dominant_fraction > 0.50 and len(unique_bins) < 100 and laplacian_var > 1000.0:
+            return False, f"High flat-color dominance ({dominant_fraction:.2f}) with restricted palette ({len(unique_bins)} bins) and high contrast text (Laplacian Var = {laplacian_var:.1f}), likely a diagram or slide"
+        
+        # Check for screenshots with UI components or text documents
+        # (mostly solid backgrounds with sharp high-contrast text and thin lines)
+        if dominant_fraction > 0.70 and edge_density > 0.15:
+            return False, f"High flat-color dominance ({dominant_fraction:.2f}) and high edge density ({edge_density:.4f}), typical of UI screenshots"
+
+    return True, "Valid satellite image"
 
 
 def rasterize_osm_to_mask(
@@ -234,8 +381,10 @@ def add_synthetic_occlusion(
     image: np.ndarray,
     mask: np.ndarray,
     occlusion_type: str = "shadow",
-) -> np.ndarray:
+    return_mask: bool = False,
+) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """Applies synthetic occlusion (shadow/canopy/cloud) to an image tile without altering the mask."""
+    from typing import Union
     h, w = image.shape[:2]
     occluded = image.astype(np.float32).copy()
 
@@ -301,4 +450,93 @@ def add_synthetic_occlusion(
     else:
         raise ValueError(f"Unknown occlusion_type '{occlusion_type}'. Use 'shadow', 'canopy', or 'cloud'.")
 
-    return np.clip(occluded, 0, 255).astype(np.uint8)
+    result = np.clip(occluded, 0, 255).astype(np.uint8)
+    if return_mask:
+        return result, blob
+    return result
+
+
+def classify_terrain_tile(image: np.ndarray) -> str:
+    """
+    Classifies an RGB tile into 'urban', 'forested', or 'rural' using color
+    and texture heuristics.
+    """
+    import cv2
+    img = image.astype(np.float32)
+    r = img[:, :, 0]
+    g = img[:, :, 1]
+    
+    # NDVI-like proxy: Green-Red Ratio (GRR)
+    grr = (g - r) / (g + r + 1e-8)
+    mean_grr = np.mean(grr)
+    
+    # Texture proxy: variance of Laplacian gradients
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    texture_var = laplacian.var()
+    
+    # Classification Logic
+    if mean_grr > 0.08:
+        return "forested"
+    elif texture_var > 250.0:
+        return "urban"
+    else:
+        return "rural"
+
+
+def run_stratified_evaluation(
+    images: List[np.ndarray],
+    pred_masks: List[np.ndarray],
+    gt_masks: List[np.ndarray],
+    unhealed_graphs: List["nx.Graph"],
+    healed_graphs: List["nx.Graph"],
+) -> Dict[str, Dict[str, float]]:
+    """
+    Groups evaluation metrics by terrain category and returns a comparison dictionary.
+    """
+    from segmentation_train import compute_metrics
+    from centrality import compute_connectivity_ratio
+    import networkx as nx
+    from typing import Dict
+    
+    results = {
+        "urban": {"iou": [], "dice": [], "conn_ratio": []},
+        "forested": {"iou": [], "dice": [], "conn_ratio": []},
+        "rural": {"iou": [], "dice": [], "conn_ratio": []}
+    }
+    
+    for img, pred, gt, g_un, g_he in zip(images, pred_masks, gt_masks, unhealed_graphs, healed_graphs):
+        terrain = classify_terrain_tile(img)
+        
+        # Convert pred and gt to PyTorch tensors for compute_metrics compatibility
+        import torch
+        # Scale to simulate model logit output: 0 -> -5.0, 1 -> 5.0
+        pred_t = torch.from_numpy(pred).unsqueeze(0).unsqueeze(0).float() * 10.0 - 5.0
+        gt_t = torch.from_numpy(gt).unsqueeze(0).unsqueeze(0).float()
+        
+        metrics = compute_metrics(pred_t, gt_t)
+        conn = compute_connectivity_ratio(g_un, g_he)
+        
+        results[terrain]["iou"].append(metrics["iou"])
+        results[terrain]["dice"].append(metrics["dice"])
+        results[terrain]["conn_ratio"].append(conn)
+        
+    # Aggregate mean values
+    report = {}
+    for terrain, metrics_list in results.items():
+        if metrics_list["iou"]:
+            report[terrain] = {
+                "mean_iou": float(np.mean(metrics_list["iou"])),
+                "mean_dice": float(np.mean(metrics_list["dice"])),
+                "mean_conn_ratio": float(np.mean(metrics_list["conn_ratio"])),
+                "sample_count": len(metrics_list["iou"])
+            }
+        else:
+            report[terrain] = {
+                "mean_iou": 0.0,
+                "mean_dice": 0.0,
+                "mean_conn_ratio": 1.0,
+                "sample_count": 0
+            }
+            
+    return report

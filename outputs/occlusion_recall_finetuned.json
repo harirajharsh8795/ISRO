@@ -1,0 +1,8 @@
+{
+  "iou_occluded": 0.9390302957603062,
+  "dice_occluded": 0.9683427530494126,
+  "iou_non_occluded": 0.9751031747668082,
+  "dice_non_occluded": 0.9873711765438635,
+  "relaxed_iou": 0.9988580625885287,
+  "apl_error_pct": 4.544849772265367
+}

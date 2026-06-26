@@ -1,0 +1,58 @@
+[
+  {
+    "filename": "11128810_15.png",
+    "resolution": "1500x1500",
+    "source_folder": "data\\local_validation\\images",
+    "status": "Accepted",
+    "reason": "Valid satellite image",
+    "has_matching_mask": true
+  },
+  {
+    "filename": "11278645_15.png",
+    "resolution": "1500x1500",
+    "source_folder": "data\\local_validation\\images",
+    "status": "Accepted",
+    "reason": "Valid satellite image",
+    "has_matching_mask": true
+  },
+  {
+    "filename": "11428660_15.png",
+    "resolution": "1500x1500",
+    "source_folder": "data\\local_validation\\images",
+    "status": "Accepted",
+    "reason": "Valid satellite image",
+    "has_matching_mask": true
+  },
+  {
+    "filename": "17428750_15.png",
+    "resolution": "1500x1500",
+    "source_folder": "data\\local_validation\\images",
+    "status": "Accepted",
+    "reason": "Valid satellite image",
+    "has_matching_mask": true
+  },
+  {
+    "filename": "23279080_15.png",
+    "resolution": "1500x1500",
+    "source_folder": "data\\local_validation\\images",
+    "status": "Accepted",
+    "reason": "Valid satellite image",
+    "has_matching_mask": true
+  },
+  {
+    "filename": "24179035_15.png",
+    "resolution": "1500x1500",
+    "source_folder": "data\\local_validation\\images",
+    "status": "Accepted",
+    "reason": "Valid satellite image",
+    "has_matching_mask": true
+  },
+  {
+    "filename": "24179185_15.png",
+    "resolution": "1500x1500",
+    "source_folder": "data\\local_validation\\images",
+    "status": "Accepted",
+    "reason": "Valid satellite image",
+    "has_matching_mask": true
+  }
+]
